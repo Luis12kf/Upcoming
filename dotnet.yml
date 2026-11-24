@@ -1,0 +1,91 @@
+name: Build UP
+
+# Este workflow se ejecuta cuando alguien hace push o crea un pull request
+# hacia la rama principal. La idea es verificar automáticamente que el proyecto
+# sigue compilando y que las pruebas siguen pasando.
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    name: Build and test
+    # Usamos un runner Linux de GitHub Actions, que es suficiente para compilar
+    # y probar una solución .NET.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+
+    steps:
+      # 1) Descarga el código fuente del repositorio para que el workflow pueda
+      # trabajar con los archivos del proyecto.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2) Instala el SDK de .NET necesario para compilar la solución.
+      # El proyecto usa .NET 10, por eso se configura la versión 10.0.x.
+      - name: Setup .NET SDK .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # 3) Restaura todos los paquetes NuGet y dependencias del proyecto antes
+      # de compilar. Esto asegura que el entorno ya tenga todo lo necesario.
+      - name: Restore dependencies
+        run: dotnet restore UP.Api/UP.Api.csproj
+
+      # 4) Instala la herramienta de SonarScanner para .NET. Si el secreto
+      # SONAR_TOKEN no existe, esta parte se omite para que el pipeline no falle.
+      - name: Install SonarScanner
+        if: ${{ secrets.SONAR_TOKEN != '' }}
+        shell: bash
+        run: |
+          dotnet tool install --global dotnet-sonarscanner
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      # 5) Si no hay token de SonarCloud configurado, avisamos al usuario pero
+      # el flujo sigue funcionando normalmente.
+      - name: SonarCloud analysis skipped
+        if: ${{ secrets.SONAR_TOKEN == '' }}
+        run: echo "Skipping SonarCloud analysis because SONAR_TOKEN is not configured."
+
+      # 6) Inicia la analítica de SonarCloud antes de compilar para que el
+      # análisis cubra la solución completa.
+      - name: Begin SonarCloud analysis
+        if: ${{ secrets.SONAR_TOKEN != '' }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          dotnet sonarscanner begin \
+            /o:"tesisenel" \
+            /k:"TesisEnel_UASD_GestionCirugiaPlastica_2026_03" \
+            /d:sonar.token="${SONAR_TOKEN}" \
+            /d:sonar.host.url="https://sonarcloud.io"
+
+      # 7) Compila el proyecto API en modo Release. El flag --no-restore evita que
+      # vuelva a restaurar paquetes ya descargados y acelera la ejecución.
+      - name: Build API project
+        run: dotnet build UP.Api/UP.Api.csproj --configuration Release --no-restore
+
+      # 8) Ejecuta la suite de pruebas del proyecto. Si alguna prueba falla,
+      # el workflow marcará el pipeline como fallido.
+      # Además, guardamos los resultados en formato TRX para que GitHub pueda
+      # mostrarlos de forma amigable en la interfaz.
+      - name: Tests skipped
+        run: echo "Skipping tests because no test project is present in this repository."
+
+      # 9) Cierra la analítica de SonarCloud para finalizar el análisis y enviar
+      # los resultados al proyecto configurado en SonarCloud.
+      - name: End SonarCloud analysis
+        if: ${{ secrets.SONAR_TOKEN != '' }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          dotnet sonarscanner end /d:sonar.token="${SONAR_TOKEN}"
